@@ -103,7 +103,7 @@ class LlamaCppLLMBackend:
 # ----------------- Transformers (bitsandbytes 4-bit/8-bit) ---------------
 
 class TransformersLLMBackend:
-    def __init__(self, model_path: str, quantization: str = "4bit"):
+    def __init__(self, model_path: str, quantization: str = "4bit", top_p: float = 0.9, repetition_penalty: float = 1.1):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
@@ -117,13 +117,21 @@ class TransformersLLMBackend:
         kwargs = {"quantization_config": bnb} if bnb else {"torch_dtype": torch.float16}
         self._model = AutoModelForCausalLM.from_pretrained(
             model_path, device_map="auto", **kwargs)
+        self._top_p = top_p
+        self._rep_penalty = repetition_penalty
 
     def generate(self, messages, max_tokens, temperature) -> str:
         inputs = self._tok.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt").to(
-            self._model.device)
-        out = self._model.generate(inputs, max_new_tokens=max_tokens,
-                                   temperature=max(temperature, 1e-5), do_sample=True)
+            messages, add_generation_prompt=True, return_tensors="pt"
+        ).to(self._model.device)
+        out = self._model.generate(
+            inputs,
+            max_new_tokens=max_tokens,
+            temperature=max(temperature, 1e-5),
+            do_sample=True,
+            top_p=self._top_p,
+            repetition_penalty=self._rep_penalty,
+        )
         return self._tok.decode(out[0][inputs.shape[-1]:], skip_special_tokens=True)
 
     def stream(self, messages, max_tokens, temperature) -> Iterator[str]:

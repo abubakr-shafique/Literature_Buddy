@@ -4,8 +4,9 @@
 profile: "16gb"
 
 llm:
-  provider: ollama            # ollama | llamacpp | transformers
-  model: qwen3:14b            # 16GB profile. 24GB: qwen3:32b
+  provider: transformers            # ollama | llamacpp | transformers
+  model: Qwen/Qwen3-14B-AWQ   # or a local path to the model dir
+  # model: Qwen/Qwen3-32B   # or Qwen/Qwen3-30B-A3B if you prefer MoE if 24GB Card
   quantization: 4bit
   max_tokens: 2048
   temperature: 0.1            # low temperature reduces hallucination in RAG
@@ -14,8 +15,8 @@ llm:
   # transformers: model_path: Qwen/Qwen3-14B-AWQ
 
 vlm:
-  provider: ollama            # ollama | transformers
-  model: qwen3-vl:8b          # 16GB/24GB. 24GB alt: qwen3-vl:32b (sequential loading)
+  provider: transformers            # ollama | transformers
+  model: Qwen/Qwen3-VL-8B-Instruct
   max_tokens: 1536
 
 embedding:
