@@ -1,0 +1,54 @@
+# Literature Buddy configuration.
+# Hardware presets: pick profile "16gb" or "24gb" (or edit fields directly).
+
+profile: "16gb"
+
+llm:
+  provider: ollama            # ollama | llamacpp | transformers
+  model: qwen3:14b            # 16GB profile. 24GB: qwen3:32b
+  quantization: 4bit
+  max_tokens: 2048
+  temperature: 0.1            # low temperature reduces hallucination in RAG
+  context_window: 32768
+  # llamacpp: model_path: ~/.cache/literature_buddy/qwen3-14b-q4_k_m.gguf, n_gpu_layers: -1
+  # transformers: model_path: Qwen/Qwen3-14B-AWQ
+
+vlm:
+  provider: ollama            # ollama | transformers
+  model: qwen3-vl:8b          # 16GB/24GB. 24GB alt: qwen3-vl:32b (sequential loading)
+  max_tokens: 1536
+
+embedding:
+  model: BAAI/bge-m3
+  batch_size: 32
+  device: auto                # auto | cuda | cpu (auto picks cuda if available)
+
+reranker:
+  enabled: true
+  model: BAAI/bge-reranker-v2-m3
+  top_n: 6
+
+retrieval:
+  top_k: 12                   # candidates before reranking; reranker cuts to top_n
+  bm25_weight: 0.3            # hybrid: score = (1-w)*dense + w*bm25
+  figure_regex_boost: true    # "Figure 3" in query -> direct figure lookup
+
+document:
+  extract_figures: true
+  extract_tables: true
+  min_figure_area_px: 40000   # skip tiny inline images/icons
+  ocr_fallback: false         # pymupdf4llm+tesseract hook (optional, off by default)
+
+storage:
+  data_dir: ~/.literature_buddy
+  papers_dir: ~/.literature_buddy/papers
+  figures_dir: ~/.literature_buddy/figures
+  index_dir: ~/.literature_buddy/indexes
+
+memory:
+  max_history_turns: 6        # short-term conversation memory window
+  summary_threshold: 4        # summarize dropped turns when exceeded
+
+ui:
+  window_title: "Literature Buddy"
+  pdf_default_zoom: 1.2
