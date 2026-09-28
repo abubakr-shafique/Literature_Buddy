@@ -1,5 +1,0 @@
-# Copy to .env to override defaults (settings.yaml takes precedence per-key).
-OLLAMA_HOST=http://localhost:11434
-LITERATURE_BUDDY_CONFIG=./config/settings.yaml
-LITERATURE_BUDDY_LOG_LEVEL=INFO
-HF_HOME=~/.cache/huggingface
