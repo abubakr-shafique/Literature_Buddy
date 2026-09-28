@@ -13,11 +13,13 @@ llm:
   context_window: 32768
   # llamacpp: model_path: ~/.cache/literature_buddy/qwen3-14b-q4_k_m.gguf, n_gpu_layers: -1
   # transformers: model_path: Qwen/Qwen3-14B-AWQ
+  cache_dir: ~/.cache/literature_buddy/models
 
 vlm:
   provider: transformers            # ollama | transformers
   model: Qwen/Qwen3-VL-8B-Instruct
   max_tokens: 1536
+  cache_dir: ~/.cache/literature_buddy/models
 
 embedding:
   model: BAAI/bge-m3

@@ -24,6 +24,7 @@ class LLMConfig(BaseModel):
     temperature: float = 0.1
     context_window: int = 32768
     n_gpu_layers: int = -1  # llamacpp: -1 = all layers on GPU
+    cache_dir: Optional[str] = None  # e.g. "~/.cache/literature_buddy/models"
 
 
 class VLMConfig(BaseModel):
@@ -31,6 +32,7 @@ class VLMConfig(BaseModel):
     model: str = "qwen3-vl:8b"
     model_path: Optional[str] = None
     max_tokens: int = 1536
+    cache_dir: Optional[str] = None
 
 
 class EmbeddingConfig(BaseModel):
