@@ -15,7 +15,7 @@ PDF reader with AI-powered chat and RAG (Retrieval-Augmented Generation).
 ### 1. Clone the repository
 
 ```bash
-git clone [https://github.com/abubakr-shafique/Literature_Buddy.git](https://github.com/abubakr-shafique/Literature_Buddy.git)
+git clone https://github.com/abubakr-shafique/Literature_Buddy.git
 cd Literature_Buddy
 ```
 
