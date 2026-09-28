@@ -38,6 +38,22 @@ Literature Buddy helps researchers read, understand, analyze, and discuss scient
 └─────────────────────────────┴────────────────────────────────┘
 ```
 
+## Project Organization
+
+literature-buddy/
+├── README.md  ✅          LICENSE / .gitignore / .env.example  ✅
+├── pyproject.toml  ✅     requirements.txt  ✅
+├── config/settings.yaml  ✅
+├── docs/{architecture.md, model-selection.md, development.md}
+├── src/literature_buddy/
+│   ├── main.py · config/settings.py  ✅
+│   ├── document/{models.py ✅, loader.py ✅, parser.py ✅, chunker.py ✅}
+│   ├── retrieval/{embeddings.py ✅, vector_store.py ✅, retriever.py ✅, reranker.py ✅}
+│   ├── models/backends.py · rag/{prompts, context_builder, citations, memory, pipeline}.py
+│   └── gui/{main_window, pdf_viewer, chat_widget, workers}.py
+├── tests/{test_chunker, test_retriever, test_rag_pipeline}.py
+└── CONTRIBUTING.md · CHANGELOG.md
+
 ## Supported models
 
 | Role | Recommended | Alternatives |
