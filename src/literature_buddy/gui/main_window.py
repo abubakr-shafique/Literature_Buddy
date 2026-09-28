@@ -1,9 +1,10 @@
-"""Two-panel main window: PDF viewer | chat, with citation navigation."""
+"""Two-panel main window: PDF viewer | chat, with citation navigation,
+drag-and-drop, and annotation context injection."""
 
 from __future__ import annotations
 
 from PySide6.QtWidgets import (QFileDialog, QInputDialog, QMainWindow, QSplitter,
-                               QStatusBar)
+                               QStatusBar, QMessageBox)
 
 from literature_buddy.config.settings import AppSettings
 from literature_buddy.gui.chat_widget import ChatWidget
@@ -30,7 +31,8 @@ class MainWindow(QMainWindow):
         self.pdf = PdfViewer(settings)
         self.chat = ChatWidget()
         splitter = QSplitter()
-        splitter.addWidget(self.pdf); splitter.addWidget(self.chat)
+        splitter.addWidget(self.pdf)
+        splitter.addWidget(self.chat)
         splitter.setSizes([700, 450])
         self.setCentralWidget(splitter)
         self.setStatusBar(QStatusBar())
@@ -41,6 +43,8 @@ class MainWindow(QMainWindow):
 
         self.chat.questionAsked.connect(self.on_question)
         self.chat.citationClicked.connect(self.pdf.goto_page)
+        self.pdf.pdfOpened.connect(self._on_pdf_opened)
+        self.pdf.annotationAdded.connect(self._on_annotation_added)
 
         # Retrieval stack (built once; index persists on disk).
         store = VectorStore(settings.storage.resolved("index_dir"))
@@ -56,15 +60,18 @@ class MainWindow(QMainWindow):
         self.manager = ModelManager(settings)
         self.memory = ConversationMemory(settings.memory.max_history_turns,
                                          settings.memory.summary_threshold)
+        self._annotation_contexts: list[str] = []
 
     # -- paper loading --------------------------------------------------------
     def open_pdf_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Open paper", "", "PDF (*.pdf)")
-        if path: self._install_paper(path)
+        if path:
+            self._install_paper(path)
 
     def open_url_dialog(self) -> None:
         url, ok = QInputDialog.getText(self, "Open URL", "Paper URL (arXiv/PMC/…)")
-        if ok and url: self._install_paper(url)
+        if ok and url:
+            self._install_paper(url)
 
     def _install_paper(self, source: str) -> None:
         self.chat.set_busy(True)
@@ -77,6 +84,7 @@ class MainWindow(QMainWindow):
     def _on_index_error(self, msg: str) -> None:
         self.chat.set_busy(False)
         self.statusBar().showMessage(f"Error: {msg}")
+        QMessageBox.critical(self, "Index error", msg)
 
     def _on_paper_ready(self, doc) -> None:
         self._doc = doc
@@ -84,14 +92,33 @@ class MainWindow(QMainWindow):
         self._pipeline = RAGPipeline(doc, self.retriever, self.manager, self.memory,
                                      context_tokens=6_000)
         self.chat.set_busy(False)
+        self._annotation_contexts.clear()
         self.statusBar().showMessage(
             f"Loaded '{doc.title[:60]}' — {doc.num_pages} pages indexed, ready.")
+
+    def _on_pdf_opened(self, path: str) -> None:
+        # Optional: auto-index if not already indexed
+        if self._doc is None or self._doc.source_path != path:
+            self._install_paper(path)
+
+    def _on_annotation_added(self, ann) -> None:
+        if not ann.text:
+            return
+        ctx = f"[ANNOTATION, {ann.kind}, p.{ann.page}] {ann.text}"
+        self._annotation_contexts.append(ctx)
+        self.statusBar().showMessage(f"Added {ann.kind} on p.{ann.page} as context.")
 
     # -- Q&A ------------------------------------------------------------------
     def on_question(self, question: str) -> None:
         if self._pipeline is None:
             self.statusBar().showMessage("Open a paper first.")
             return
+
+        # Inject annotation contexts into memory as a system-like hint
+        if self._annotation_contexts:
+            hint = "User-selected excerpts from the paper:\n" + "\n".join(self._annotation_contexts)
+            self.memory.turns.append({"role": "system", "content": hint})
+
         self.chat.add_user_message(question)
         self.chat.set_busy(True)
         self._ans_worker = AnswerWorker(self._pipeline, question)
@@ -105,3 +132,7 @@ class MainWindow(QMainWindow):
         html = "<br>".join(c.as_html() for c in citations)
         self.chat.finish_assistant_message(html)
         self.chat.set_busy(False)
+        # clear annotation hint after one turn so it doesn't persist forever
+        self.memory.turns = [t for t in self.memory.turns
+                             if not (t.get("role") == "system"
+                                     and "User-selected excerpts" in t.get("content", ""))]
