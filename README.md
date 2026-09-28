@@ -62,7 +62,7 @@ See [docs/model-selection.md](docs/model-selection.md) for full analysis.
 
 ```bash
 # 1. Clone and set up environment
-git clone https://github.com/your-org/literature-buddy.git
+git clone https://github.com/abubakr-shafique/Literature_Buddy.git
 cd literature-buddy
 python -m venv .venv && source .venv/bin/activate   # .venv\Scripts\activate on Windows
 
