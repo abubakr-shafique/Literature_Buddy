@@ -1,387 +1,268 @@
-"""LLM/VLM backend abstractions and implementations + ModelManager.
+"""ML model backends for embeddings, LLM, and reranking."""
 
-Abstraction keeps the rest of the app provider-agnostic (spec §17).
-ModelManager enforces hardware-aware residency: on the 16 GB profile the
-LLM and VLM are loaded sequentially, never simultaneously.
-"""
-
-from __future__ import annotations
-
-import os
+from typing import List, Optional, Dict, Any, Tuple
 from pathlib import Path
-from typing import Iterator, Protocol
-
-from literature_buddy.config.settings import AppSettings
+import numpy as np
 
 
-class LLMBackend(Protocol):
-    def generate(
-        self,
-        messages: list[dict],
-        max_tokens: int,
-        temperature: float,
-    ) -> str: ...
-
-    def stream(
-        self,
-        messages: list[dict],
-        max_tokens: int,
-        temperature: float,
-    ) -> Iterator[str]: ...
-
-    def unload(self) -> None: ...
-
-
-class VLMBackend(Protocol):
-    def analyze_image(
-        self,
-        prompt: str,
-        image_path: str,
-        max_tokens: int = 1536,
-    ) -> str: ...
-
-    def unload(self) -> None: ...
-
-
-# --------------------------- Ollama (default) ---------------------------
-
-
-class OllamaLLMBackend:
-    def __init__(self, model: str):
-        from ollama import Client
-
-        host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-        self._client = Client(host=host)
-        self._model = model
-
-    def generate(
-        self,
-        messages: list[dict],
-        max_tokens: int,
-        temperature: float,
-    ) -> str:
-        r = self._client.chat(
-            model=self._model,
-            messages=messages,
-            options={"temperature": temperature, "num_predict": max_tokens},
-        )
-        return r["message"]["content"]
-
-    def stream(
-        self,
-        messages: list[dict],
-        max_tokens: int,
-        temperature: float,
-    ) -> Iterator[str]:
-        for part in self._client.chat(
-            model=self._model,
-            messages=messages,
-            stream=True,
-            options={"temperature": temperature, "num_predict": max_tokens},
-        ):
-            yield part["message"]["content"]
-
-    def unload(self) -> None:
-        # Ollama auto-unloads after keep_alive; explicit unload = keep_alive 0.
-        self._client.generate(model=self._model, keep_alive=0)
-
-
-class OllamaVLMBackend:
-    def __init__(self, model: str, max_tokens: int = 1536):
-        from ollama import Client
-
-        host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-        self._client = Client(host=host)
-        self._model = model
-        self._max_tokens = max_tokens
-
-    def analyze_image(
-        self,
-        prompt: str,
-        image_path: str,
-        max_tokens: int = 0,
-    ) -> str:
-        r = self._client.chat(
-            model=self._model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                    "images": [str(image_path)],
-                }
-            ],
-            options={"num_predict": max_tokens or self._max_tokens},
-        )
-        return r["message"]["content"]
-
-    def unload(self) -> None:
-        self._client.generate(model=self._model, keep_alive=0)
-
-
-# ------------------ llama.cpp (GGUF, tight VRAM control) ----------------
-
-
-class LlamaCppLLMBackend:
+class EmbeddingBackend:
+    """Sentence embedding backend using sentence-transformers."""
+    
     def __init__(
         self,
-        model_path: str,
-        n_gpu_layers: int = -1,
-        context_window: int = 32768,
+        model_name: str = "all-MiniLM-L6-v2",
+        cache_dir: str = "./models/embeddings",
+        device: str = "cpu"
     ):
-        from llama_cpp import Llama
-
-        self._llm = Llama(
-            model_path=model_path,
-            n_ctx=context_window,
-            n_gpu_layers=n_gpu_layers,
-            verbose=False,
-        )
-
-    def generate(
-        self,
-        messages: list[dict],
-        max_tokens: int,
-        temperature: float,
-    ) -> str:
-        r = self._llm.create_chat_completion(
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
-        return r["choices"][0]["message"]["content"]
-
-    def stream(
-        self,
-        messages: list[dict],
-        max_tokens: int,
-        temperature: float,
-    ) -> Iterator[str]:
-        for tok in self._llm.create_chat_completion(
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            stream=True,
-        ):
-            if chunk := tok["choices"][0].get("delta", {}).get("content"):
-                yield chunk
-
-    def unload(self) -> None:
-        del self._llm
-
-
-# ----------------- Transformers (bitsandbytes 4-bit/8-bit) ---------------
-
-
-class TransformersLLMBackend:
-    def __init__(
-        self,
-        model_path: str,
-        quantization: str = "4bit",
-        top_p: float = 0.9,
-        repetition_penalty: float = 1.1,
-        context_window: int = 32768,
-        cache_dir: str | None = None,
-    ):
-        import torch
-        from transformers import (
-            AutoModelForCausalLM,
-            AutoTokenizer,
-            BitsAndBytesConfig,
-        )
-
-        from .model_loader import ensure_transformers_model
-
-        # Ensure weights are downloaded if using a HF model ID
-        local_path = ensure_transformers_model(model_path, cache_dir)
-
-        bnb = None
-        if quantization == "4bit" and torch.cuda.is_available():
-            bnb = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float16,
-            )
-        elif quantization == "8bit" and torch.cuda.is_available():
-            bnb = BitsAndBytesConfig(load_in_8bit=True)
-
-        self._tok = AutoTokenizer.from_pretrained(local_path)
-        kwargs = {"quantization_config": bnb} if bnb else {"torch_dtype": torch.float16}
-
-        self._model = AutoModelForCausalLM.from_pretrained(
-            local_path,
-            device_map="auto",
-            **kwargs,
-        )
-
-        self._top_p = top_p
-        self._rep_penalty = repetition_penalty
-
-    def generate(
-        self,
-        messages: list[dict],
-        max_tokens: int,
-        temperature: float,
-    ) -> str:
-        inputs = self._tok.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            return_tensors="pt",
-        ).to(self._model.device)
-
-        out = self._model.generate(
-            inputs,
-            max_new_tokens=max_tokens,
-            temperature=max(temperature, 1e-5),
-            do_sample=True,
-            top_p=self._top_p,
-            repetition_penalty=self._rep_penalty,
-        )
-        return self._tok.decode(
-            out[0][inputs.shape[-1] :],
-            skip_special_tokens=True,
-        )
-
-    def stream(
-        self,
-        messages: list[dict],
-        max_tokens: int,
-        temperature: float,
-    ) -> Iterator[str]:
-        # Non-streaming fallback keeps the Protocol; swap in TextIteratorStreamer if desired.
-        yield self.generate(messages, max_tokens, temperature)
-
-    def unload(self) -> None:
-        import gc
-        import torch
-
-        del self._model
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-
-class TransformersVLMBackend:
-    """Transformers VLM, e.g. Qwen3-VL via AutoModelForVision2Seq."""
-
-    def __init__(
-        self,
-        model_path: str,
-        cache_dir: str | None = None,
-    ):
-        from transformers import AutoModelForVision2Seq, AutoProcessor
-
-        from .model_loader import ensure_transformers_model
-
-        local_path = ensure_transformers_model(model_path, cache_dir)
-
-        self._proc = AutoProcessor.from_pretrained(local_path)
-        self._model = AutoModelForVision2Seq.from_pretrained(
-            local_path,
-            device_map="auto",
-            dtype="auto",
-        )
-
-    def analyze_image(
-        self,
-        prompt: str,
-        image_path: str,
-        max_tokens: int = 1536,
-    ) -> str:
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "url": f"file://{Path(image_path).resolve()}",
-                    },
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ]
-        text = self._proc.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        inputs = self._proc(
-            text=[text],
-            images=[str(image_path)],
-            return_tensors="pt",
-        ).to(self._model.device)
-
-        out = self._model.generate(**inputs, max_new_tokens=max_tokens)
-        return self._proc.batch_decode(
-            out[:, inputs["input_ids"].shape[1] :],
-            skip_special_tokens=True,
-        )[0]
-
-    def unload(self) -> None:
-        import gc
-        import torch
-
-        del self._model
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-
-# ----------------------------- ModelManager ------------------------------
-
-
-class ModelManager:
-    """Lazily builds backends; on 16 GB profile enforces sequential residency."""
-
-    def __init__(self, settings: AppSettings):
-        self._s = settings
-        self._llm: LLMBackend | None = None
-        self._vlm: VLMBackend | None = None
-
+        self.model_name = model_name
+        self.cache_dir = cache_dir
+        self.device = device
+        
+        # Lazy load
+        self._model = None
+    
     @property
-    def sequential(self) -> bool:
-        return self._s.profile == "16gb"  # 24 GB: co-residency allowed
-
-    def llm(self) -> LLMBackend:
-        if self._llm is None:
-            cfg = self._s.llm
-            if self.sequential and self._vlm is not None:
-                self._vlm.unload()
-                self._vlm = None
-
-            if cfg.provider == "ollama":
-                self._llm = OllamaLLMBackend(cfg.model)
-            elif cfg.provider == "llamacpp":
-                self._llm = LlamaCppLLMBackend(
-                    cfg.model_path,
-                    cfg.n_gpu_layers,
-                    cfg.context_window,
+    def model(self):
+        """Lazy load the embedding model."""
+        if self._model is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+                self._model = SentenceTransformer(
+                    self.model_name,
+                    cache_folder=self.cache_dir,
+                    device=self.device
                 )
-            elif cfg.provider == "transformers":
-                self._llm = TransformersLLMBackend(
-                    model_path=cfg.model_path,
-                    quantization=cfg.quantization,
-                    context_window=cfg.context_window,
-                    cache_dir=cfg.cache_dir,
+            except ImportError:
+                raise ImportError(
+                    "sentence-transformers not installed. "
+                    "Run: pip install sentence-transformers"
                 )
+        return self._model
+    
+    def encode(self, texts: List[str], normalize: bool = True) -> np.ndarray:
+        """Encode texts to embeddings."""
+        embeddings = self.model.encode(
+            texts,
+            normalize_embeddings=normalize,
+            show_progress_bar=False
+        )
+        return np.array(embeddings)
+    
+    def encode_query(self, query: str) -> np.ndarray:
+        """Encode a single query."""
+        return self.encode([query])[0]
+    
+    @property
+    def dimension(self) -> int:
+        """Get embedding dimension."""
+        if self._model is None:
+            # Load model to get dimension
+            _ = self.model
+        return self._model.get_sentence_embedding_dimension()
+
+
+class LLMBackend:
+    """LLM backend using transformers for local inference."""
+    
+    def __init__(
+        self,
+        model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        cache_dir: str = "./models/llm",
+        device: str = "cpu",
+        max_context_length: int = 2048,
+        max_new_tokens: int = 512
+    ):
+        self.model_name = model_name
+        self.cache_dir = cache_dir
+        self.device = device
+        self.max_context_length = max_context_length
+        self.max_new_tokens = max_new_tokens
+        
+        # Lazy load
+        self._model = None
+        self._tokenizer = None
+        self._pipeline = None
+    
+    @property
+    def model(self):
+        """Lazy load the LLM model."""
+        if self._model is None:
+            try:
+                from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+                
+                # Load tokenizer
+                self._tokenizer = AutoTokenizer.from_pretrained(
+                    self.model_name,
+                    cache_dir=self.cache_dir,
+                    trust_remote_code=True
+                )
+                
+                # Set pad token if not exists
+                if self._tokenizer.pad_token is None:
+                    self._tokenizer.pad_token = self._tokenizer.eos_token
+                
+                # Load model
+                self._model = AutoModelForCausalLM.from_pretrained(
+                    self.model_name,
+                    cache_dir=self.cache_dir,
+                    torch_dtype="auto",
+                    device_map="auto" if self.device == "cuda" else None,
+                    trust_remote_code=True
+                )
+                
+                # Create pipeline
+                self._pipeline = pipeline(
+                    "text-generation",
+                    model=self._model,
+                    tokenizer=self._tokenizer,
+                    device=0 if self.device == "cuda" else -1,
+                    max_new_tokens=self.max_new_tokens,
+                    return_full_text=False
+                )
+                
+            except ImportError:
+                raise ImportError(
+                    "transformers not installed. "
+                    "Run: pip install transformers torch"
+                )
+        return self._model
+    
+    def generate_response(
+        self,
+        query: str,
+        context: str = "",
+        temperature: float = 0.7
+    ) -> str:
+        """Generate a response given query and context."""
+        if self._pipeline is None:
+            _ = self.model  # Load model
+        
+        # Build prompt
+        if context:
+            prompt = f"""<|system|>
+You are a helpful assistant that answers questions based on the provided context.
+
+Context:
+{context}
+
+<|user|>
+{query}
+
+<|assistant|>
+"""
+        else:
+            prompt = f"""<|system|>
+You are a helpful assistant.
+
+<|user|>
+{query}
+
+<|assistant|>
+"""
+        
+        # Generate
+        try:
+            outputs = self._pipeline(
+                prompt,
+                temperature=temperature,
+                do_sample=temperature > 0.0,
+                top_p=0.95,
+                pad_token_id=self._tokenizer.eos_token_id
+            )
+            
+            if outputs and len(outputs) > 0:
+                return outputs[0]['generated_text'].strip()
             else:
-                raise ValueError(f"Unknown LLM provider: {cfg.provider}")
+                return "I couldn't generate a response. Please try again."
+                
+        except Exception as e:
+            return f"Error generating response: {str(e)}"
+    
+    def generate(
+        self,
+        prompt: str,
+        max_tokens: Optional[int] = None,
+        temperature: float = 0.7
+    ) -> str:
+        """Generate text from a prompt."""
+        if self._pipeline is None:
+            _ = self.model
+        
+        outputs = self._pipeline(
+            prompt,
+            max_new_tokens=max_tokens or self.max_new_tokens,
+            temperature=temperature,
+            do_sample=temperature > 0.0,
+            top_p=0.95,
+            pad_token_id=self._tokenizer.eos_token_id
+        )
+        
+        if outputs and len(outputs) > 0:
+            return outputs[0]['generated_text'].strip()
+        return ""
 
-        return self._llm
 
-    def vlm(self) -> VLMBackend:
-        if self._vlm is None:
-            cfg = self._s.vlm
-            if self.sequential and self._llm is not None:
-                self._llm.unload()
-                self._llm = None
-
-            if cfg.provider == "ollama":
-                self._vlm = OllamaVLMBackend(cfg.model, cfg.max_tokens)
-            elif cfg.provider == "transformers":
-                self._vlm = TransformersVLMBackend(
-                    model_path=cfg.model_path,
-                    cache_dir=cfg.cache_dir,
+class RerankerBackend:
+    """Cross-encoder reranker for re-ranking retrieved documents."""
+    
+    def __init__(
+        self,
+        model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        cache_dir: str = "./models/reranker",
+        device: str = "cpu"
+    ):
+        self.model_name = model_name
+        self.cache_dir = cache_dir
+        self.device = device
+        
+        # Lazy load
+        self._model = None
+    
+    @property
+    def model(self):
+        """Lazy load the reranker model."""
+        if self._model is None:
+            try:
+                from sentence_transformers import CrossEncoder
+                self._model = CrossEncoder(
+                    self.model_name,
+                    cache_dir=self.cache_dir,
+                    device=self.device
                 )
-            else:
-                raise ValueError(f"Unknown VLM provider: {cfg.provider}")
-
-        return self._vlm
+            except ImportError:
+                raise ImportError(
+                    "sentence-transformers not installed. "
+                    "Run: pip install sentence-transformers"
+                )
+        return self._model
+    
+    def rerank(
+        self,
+        query: str,
+        documents: List[str],
+        top_k: int = 5
+    ) -> List[Tuple[int, float, str]]:
+        """
+        Rerank documents based on relevance to query.
+        
+        Returns:
+            List of (index, score, document) tuples, sorted by score descending.
+        """
+        if not documents:
+            return []
+        
+        # Create pairs
+        pairs = [[query, doc] for doc in documents]
+        
+        # Get scores
+        scores = self.model.predict(pairs)
+        
+        # Create indexed results
+        results = [(i, float(score), doc) 
+                   for i, (score, doc) in enumerate(zip(scores, documents))]
+        
+        # Sort by score descending
+        results.sort(key=lambda x: x[1], reverse=True)
+        
+        # Return top_k
+        return results[:top_k]

@@ -1,138 +1,417 @@
-"""Two-panel main window: PDF viewer | chat, with citation navigation,
-drag-and-drop, and annotation context injection."""
+"""Main application window integrating PDF viewer and chat."""
 
-from __future__ import annotations
+import os
+from pathlib import Path
+from typing import Optional, List
 
-from PySide6.QtWidgets import (QFileDialog, QInputDialog, QMainWindow, QSplitter,
-                               QStatusBar, QMessageBox)
+from PySide6.QtCore import Qt, QThread, QObject, Signal, QSettings
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QAction, QKeySequence
+from PySide6.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+    QSplitter, QStatusBar, QMenuBar, QMenu, QAction,
+    QFileDialog, QMessageBox, QToolBar, QLabel, QComboBox,
+    QPushButton, QColorDialog
+)
 
-from literature_buddy.config.settings import AppSettings
-from literature_buddy.gui.chat_widget import ChatWidget
-from literature_buddy.gui.pdf_viewer import PdfViewer
-from literature_buddy.gui.workers import AnswerWorker, IndexWorker
-from literature_buddy.models.backends import ModelManager
-from literature_buddy.rag.memory import ConversationMemory
-from literature_buddy.rag.pipeline import RAGPipeline
-from literature_buddy.retrieval.embeddings import SentenceTransformerEmbeddings
-from literature_buddy.retrieval.reranker import CrossEncoderReranker, IdentityReranker
-from literature_buddy.retrieval.retriever import Retriever
-from literature_buddy.retrieval.vector_store import VectorStore
+from .pdf_viewer import PdfViewerWidget
+from .chat_widget import ChatWidget
+from ..document.loader import DocumentLoader
+from ..document.parser import DocumentParser
+from ..rag.retriever import Retriever
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, settings: AppSettings):
+    """Main application window with PDF viewer and chat."""
+    
+    def __init__(self):
         super().__init__()
-        self.setWindowTitle(settings.ui.window_title)
-        self.resize(1500, 950)
-        self.settings = settings
-        self._doc = None
-        self._pipeline = None
-
-        self.pdf = PdfViewer(settings)
-        self.chat = ChatWidget()
-        splitter = QSplitter()
-        splitter.addWidget(self.pdf)
-        splitter.addWidget(self.chat)
-        splitter.setSizes([700, 450])
-        self.setCentralWidget(splitter)
-        self.setStatusBar(QStatusBar())
-
-        mb = self.menuBar().addMenu("&File")
-        mb.addAction("Open PDF…", self.open_pdf_dialog)
-        mb.addAction("Open from URL…", self.open_url_dialog)
-
-        self.chat.questionAsked.connect(self.on_question)
-        self.chat.citationClicked.connect(self.pdf.goto_page)
-        self.pdf.pdfOpened.connect(self._on_pdf_opened)
-        self.pdf.annotationAdded.connect(self._on_annotation_added)
-
-        # Retrieval stack (built once; index persists on disk).
-        store = VectorStore(settings.storage.resolved("index_dir"))
-        embedder = SentenceTransformerEmbeddings(
-            settings.embedding.model, settings.embedding.device,
-            settings.embedding.batch_size)
-        reranker = (CrossEncoderReranker(settings.reranker.model)
-                    if settings.reranker.enabled else IdentityReranker())
-        self.retriever = Retriever(store, embedder, reranker,
-                                   top_k=settings.retrieval.top_k,
-                                   bm25_weight=settings.retrieval.bm25_weight,
-                                   rerank_top_n=settings.reranker.top_n)
-        self.manager = ModelManager(settings)
-        self.memory = ConversationMemory(settings.memory.max_history_turns,
-                                         settings.memory.summary_threshold)
-        self._annotation_contexts: list[str] = []
-
-    # -- paper loading --------------------------------------------------------
-    def open_pdf_dialog(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open paper", "", "PDF (*.pdf)")
-        if path:
-            self._install_paper(path)
-
-    def open_url_dialog(self) -> None:
-        url, ok = QInputDialog.getText(self, "Open URL", "Paper URL (arXiv/PMC/…)")
-        if ok and url:
-            self._install_paper(url)
-
-    def _install_paper(self, source: str) -> None:
-        self.chat.set_busy(True)
-        self._worker = IndexWorker(source, self.settings, self.retriever)
-        self._worker.progress.connect(self.statusBar().showMessage)
-        self._worker.error.connect(self._on_index_error)
-        self._worker.done.connect(self._on_paper_ready)
-        self._worker.start()
-
-    def _on_index_error(self, msg: str) -> None:
-        self.chat.set_busy(False)
-        self.statusBar().showMessage(f"Error: {msg}")
-        QMessageBox.critical(self, "Index error", msg)
-
-    def _on_paper_ready(self, doc) -> None:
-        self._doc = doc
-        self.pdf.open_pdf(doc.source_path)
-        self._pipeline = RAGPipeline(doc, self.retriever, self.manager, self.memory,
-                                     context_tokens=6_000)
-        self.chat.set_busy(False)
-        self._annotation_contexts.clear()
-        self.statusBar().showMessage(
-            f"Loaded '{doc.title[:60]}' — {doc.num_pages} pages indexed, ready.")
-
-    def _on_pdf_opened(self, path: str) -> None:
-        # Optional: auto-index if not already indexed
-        if self._doc is None or self._doc.source_path != path:
-            self._install_paper(path)
-
-    def _on_annotation_added(self, ann) -> None:
-        if not ann.text:
+        
+        self.document_loader: Optional[DocumentLoader] = None
+        self.document_parser: Optional[DocumentParser] = None
+        self.retriever: Optional[Retriever] = None
+        self.current_pdf_path: Optional[str] = None
+        self.highlights: List = []  # Store highlight annotations
+        
+        self._setup_ui()
+        self._setup_menu()
+        self._setup_toolbar()
+        self._setup_statusbar()
+        self._setup_drag_drop()
+        
+        # Load settings
+        self._load_settings()
+    
+    def _setup_ui(self) -> None:
+        """Initialize the main UI."""
+        self.setWindowTitle("Literature Buddy")
+        self.setMinimumSize(1200, 800)
+        
+        # Central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # Main layout
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+        
+        # Splitter for PDF viewer and chat
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setHandleWidth(5)
+        
+        # PDF viewer (left side, 70%)
+        self.pdf_viewer = PdfViewerWidget()
+        self.pdf_viewer.pdf_loaded.connect(self._on_pdf_loaded)
+        self.pdf_viewer.error_occurred.connect(self._on_error)
+        splitter.addWidget(self.pdf_viewer)
+        
+        # Chat widget (right side, 30%)
+        self.chat_widget = ChatWidget()
+        splitter.addWidget(self.chat_widget)
+        
+        # Set initial sizes
+        splitter.setSizes([840, 360])
+        
+        main_layout.addWidget(splitter)
+    
+    def _setup_menu(self) -> None:
+        """Create menu bar."""
+        menubar = self.menuBar()
+        
+        # File menu
+        file_menu = menubar.addMenu("&File")
+        
+        open_action = QAction("&Open PDF", self)
+        open_action.setShortcut("Ctrl+O")
+        open_action.triggered.connect(self._on_open_pdf)
+        file_menu.addAction(open_action)
+        
+        file_menu.addSeparator()
+        
+        exit_action = QAction("E&xit", self)
+        exit_action.setShortcut("Ctrl+Q")
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+        
+        # Edit menu - Highlight only (removed Underline)
+        edit_menu = menubar.addMenu("&Edit")
+        
+        highlight_action = QAction("&Highlight Selected Text", self)
+        highlight_action.setShortcut("Ctrl+H")
+        highlight_action.triggered.connect(self._on_highlight)
+        edit_menu.addAction(highlight_action)
+        
+        clear_action = QAction("&Clear All Highlights", self)
+        clear_action.setShortcut("Ctrl+L")
+        clear_action.triggered.connect(self._on_clear_highlights)
+        edit_menu.addAction(clear_action)
+        
+        edit_menu.addSeparator()
+        
+        # Highlight color selector
+        color_action = QAction("Highlight &Color...", self)
+        color_action.triggered.connect(self._on_select_color)
+        edit_menu.addAction(color_action)
+        
+        # Help menu
+        help_menu = menubar.addMenu("&Help")
+        
+        about_action = QAction("&About", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
+    
+    def _setup_toolbar(self) -> None:
+        """Create toolbar with highlight and clear buttons (removed underline)."""
+        toolbar = QToolBar("Annotation Tools")
+        toolbar.setMovable(False)
+        toolbar.setIconSize(Qt.size(24, 24))
+        self.addToolBar(toolbar)
+        
+        # Highlight button
+        self.highlight_action = QAction("🖍️ Highlight", self)
+        self.highlight_action.setToolTip("Highlight selected text (Ctrl+H)")
+        self.highlight_action.triggered.connect(self._on_highlight)
+        toolbar.addAction(self.highlight_action)
+        
+        toolbar.addSeparator()
+        
+        # Clear highlights button
+        self.clear_action = QAction("🗑️ Clear Highlights", self)
+        self.clear_action.setToolTip("Clear all highlights (Ctrl+L)")
+        self.clear_action.triggered.connect(self._on_clear_highlights)
+        toolbar.addAction(self.clear_action)
+        
+        toolbar.addSeparator()
+        
+        # Highlight color button
+        self.color_button = QPushButton("🎨 Color")
+        self.color_button.setToolTip("Select highlight color")
+        self.color_button.setFixedWidth(80)
+        self.color_button.clicked.connect(self._on_select_color)
+        toolbar.addWidget(self.color_button)
+        
+        # Current color indicator
+        self.color_indicator = QLabel()
+        self.color_indicator.setFixedSize(24, 24)
+        self.color_indicator.setStyleSheet("background-color: yellow; border: 1px solid black;")
+        self.color_indicator.setToolTip("Current highlight color")
+        toolbar.addWidget(self.color_indicator)
+        
+        self.highlight_color = Qt.yellow  # Default highlight color
+    
+    def _setup_statusbar(self) -> None:
+        """Create status bar."""
+        self.statusbar = QStatusBar()
+        self.setStatusBar(self.statusbar)
+        self.statusbar.showMessage("Ready - Open a PDF to start")
+    
+    def _setup_drag_drop(self) -> None:
+        """Enable drag and drop on main window."""
+        self.setAcceptDrops(True)
+    
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        """Handle drag enter - accept PDF files."""
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls:
+                url = urls[0]
+                if url.isLocalFile():
+                    file_path = url.toLocalFile()
+                    if file_path.lower().endswith('.pdf'):
+                        event.acceptProposedAction()
+                        return
+        event.ignore()
+    
+    def dropEvent(self, event: QDropEvent) -> None:
+        """Handle drop - load PDF file."""
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls:
+                url = urls[0]
+                if url.isLocalFile():
+                    file_path = url.toLocalFile()
+                    if file_path.lower().endswith('.pdf'):
+                        event.acceptProposedAction()
+                        self._load_pdf(file_path)
+                        return
+        event.ignore()
+    
+    def _on_open_pdf(self) -> None:
+        """Handle menu open PDF action."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open PDF",
+            str(Path.home()),
+            "PDF Files (*.pdf);;All Files (*)"
+        )
+        
+        if file_path:
+            self._load_pdf(file_path)
+    
+    def _load_pdf(self, file_path: str) -> None:
+        """Load PDF file and initialize document processing."""
+        try:
+            self.statusbar.showMessage(f"Loading: {file_path}")
+            
+            # Validate file
+            if not os.path.exists(file_path):
+                self._show_error("File not found")
+                return
+            
+            # Load PDF through viewer
+            self.pdf_viewer._load_pdf_safe(file_path)
+            
+        except Exception as e:
+            self._show_error(f"Failed to load PDF: {str(e)}")
+    
+    def _on_pdf_loaded(self, file_path: str) -> None:
+        """Handle PDF loaded signal."""
+        self.current_pdf_path = file_path
+        self.statusbar.showMessage(f"Loaded: {Path(file_path).name}")
+        
+        # Clear previous highlights
+        self.highlights.clear()
+        
+        # Initialize document processing in background
+        self._initialize_document_processing(file_path)
+    
+    def _initialize_document_processing(self, file_path: str) -> None:
+        """Initialize document loader, parser, and retriever."""
+        try:
+            # Create document loader
+            self.document_loader = DocumentLoader(file_path)
+            
+            # Create parser
+            self.document_parser = DocumentParser()
+            
+            # Parse document
+            chunks = self.document_parser.parse(file_path)
+            
+            # Create retriever with chunks
+            self.retriever = Retriever(chunks)
+            
+            # Set up chat with context
+            context = self._build_context_from_chunks(chunks)
+            self.chat_widget.set_pdf_context(context)
+            
+            # Set model backend (adjust based on your actual backend)
+            # self.chat_widget.set_model_backend(self.retriever)
+            
+            self.statusbar.showMessage(f"Ready - {len(chunks)} chunks indexed")
+            
+        except Exception as e:
+            self._show_error(f"Failed to process document: {str(e)}")
+    
+    def _build_context_from_chunks(self, chunks) -> str:
+        """Build context string from document chunks."""
+        if not chunks:
+            return ""
+        
+        # Combine first few chunks as context (adjust as needed)
+        context_chunks = chunks[:5]
+        context = "\n\n".join([str(chunk) for chunk in context_chunks])
+        return context
+    
+    def _on_highlight(self) -> None:
+        """Add highlight annotation to selected text."""
+        if not self.pdf_viewer.current_pdf:
+            self._show_error("No PDF loaded")
             return
-        ctx = f"[ANNOTATION, {ann.kind}, p.{ann.page}] {ann.text}"
-        self._annotation_contexts.append(ctx)
-        self.statusBar().showMessage(f"Added {ann.kind} on p.{ann.page} as context.")
-
-    # -- Q&A ------------------------------------------------------------------
-    def on_question(self, question: str) -> None:
-        if self._pipeline is None:
-            self.statusBar().showMessage("Open a paper first.")
+        
+        try:
+            # Get selected text from PDF viewer
+            # This assumes pdf_viewer has a method to get selection
+            if hasattr(self.pdf_viewer, 'get_selected_text'):
+                selected_text = self.pdf_viewer.get_selected_text()
+                
+                if not selected_text:
+                    self._show_error("No text selected")
+                    return
+                
+                # Add highlight annotation
+                page_num = self.pdf_viewer.current_page if hasattr(self.pdf_viewer, 'current_page') else 0
+                rect = self.pdf_viewer.get_selection_rect() if hasattr(self.pdf_viewer, 'get_selection_rect') else None
+                
+                if rect:
+                    # Create highlight annotation
+                    page = self.pdf_viewer.current_pdf[page_num]
+                    highlight = page.add_highlight_annot(rect)
+                    highlight.set_colors(stroke=self.highlight_color)
+                    highlight.update()
+                    
+                    # Store highlight reference
+                    self.highlights.append(highlight)
+                    
+                    self.statusbar.showMessage(f"Highlighted: {selected_text[:50]}...")
+                else:
+                    self._show_error("Could not get selection rectangle")
+            else:
+                self._show_error("Selection not supported in current viewer")
+                
+        except Exception as e:
+            self._show_error(f"Highlight failed: {str(e)}")
+    
+    def _on_clear_highlights(self) -> None:
+        """Clear all highlight annotations."""
+        if not self.pdf_viewer.current_pdf:
+            self._show_error("No PDF loaded")
             return
-
-        # Inject annotation contexts into memory as a system-like hint
-        if self._annotation_contexts:
-            hint = "User-selected excerpts from the paper:\n" + "\n".join(self._annotation_contexts)
-            self.memory.turns.append({"role": "system", "content": hint})
-
-        self.chat.add_user_message(question)
-        self.chat.set_busy(True)
-        self._ans_worker = AnswerWorker(self._pipeline, question)
-        self._ans_worker.finished_answer.connect(self._on_answer)
-        self._ans_worker.error.connect(self._on_index_error)
-        self._ans_worker.start()
-
-    def _on_answer(self, text: str, citations) -> None:
-        self.chat.start_assistant_message()
-        self.chat.append_assistant_chunk(text)
-        html = "<br>".join(c.as_html() for c in citations)
-        self.chat.finish_assistant_message(html)
-        self.chat.set_busy(False)
-        # clear annotation hint after one turn so it doesn't persist forever
-        self.memory.turns = [t for t in self.memory.turns
-                             if not (t.get("role") == "system"
-                                     and "User-selected excerpts" in t.get("content", ""))]
+        
+        try:
+            # Remove all highlight annotations
+            for page_num in range(len(self.pdf_viewer.current_pdf)):
+                page = self.pdf_viewer.current_pdf[page_num]
+                annots = page.annots()
+                
+                if annots:
+                    for annot in annots:
+                        if annot.type[0] == 8:  # Highlight annotation type
+                            page.delete_annot(annot)
+            
+            # Clear highlights list
+            self.highlights.clear()
+            
+            # Refresh display
+            if hasattr(self.pdf_viewer, 'refresh'):
+                self.pdf_viewer.refresh()
+            
+            self.statusbar.showMessage("All highlights cleared")
+            
+        except Exception as e:
+            self._show_error(f"Clear highlights failed: {str(e)}")
+    
+    def _on_select_color(self) -> None:
+        """Open color dialog to select highlight color."""
+        color = QColorDialog.getColor(self.highlight_color, self, "Select Highlight Color")
+        
+        if color.isValid():
+            self.highlight_color = color
+            self.color_indicator.setStyleSheet(
+                f"background-color: {color.name()}; border: 1px solid black;"
+            )
+            self.statusbar.showMessage(f"Highlight color set to {color.name()}")
+    
+    def _on_error(self, error_msg: str) -> None:
+        """Handle error signal from widgets."""
+        self._show_error(error_msg)
+    
+    def _show_error(self, message: str) -> None:
+        """Show error message to user."""
+        QMessageBox.critical(self, "Error", message)
+        self.statusbar.showMessage(f"Error: {message}")
+    
+    def _show_about(self) -> None:
+        """Show about dialog."""
+        QMessageBox.about(
+            self,
+            "About Literature Buddy",
+            "Literature Buddy\n\n"
+            "A PDF reader with AI-powered chat.\n\n"
+            "Features:\n"
+            "- Drag and drop PDF files\n"
+            "- Click to open PDFs\n"
+            "- Chat about document content\n"
+            "- Highlight text (underline removed)\n"
+            "- Clear all highlights\n"
+            "- RAG-based retrieval\n\n"
+            "© 2026"
+        )
+    
+    def _load_settings(self) -> None:
+        """Load application settings."""
+        settings = QSettings("LiteratureBuddy", "MainWindow")
+        
+        # Restore window geometry
+        geometry = settings.value("geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+        
+        # Restore highlight color
+        color = settings.value("highlight_color", Qt.yellow)
+        if isinstance(color, str):
+            # Convert from string if needed
+            from PySide6.QtGui import QColor
+            self.highlight_color = QColor(color)
+        
+        self.statusbar.showMessage("Settings loaded")
+    
+    def _save_settings(self) -> None:
+        """Save application settings."""
+        settings = QSettings("LiteratureBuddy", "MainWindow")
+        settings.setValue("geometry", self.saveGeometry())
+        settings.setValue("highlight_color", self.highlight_color.name())
+    
+    def closeEvent(self, event) -> None:
+        """Clean up on application close."""
+        # Save settings
+        self._save_settings()
+        
+        # Clean up chat widget
+        if hasattr(self, 'chat_widget'):
+            self.chat_widget.close()
+        
+        # Clean up PDF viewer
+        if hasattr(self, 'pdf_viewer'):
+            self.pdf_viewer.close()
+        
+        event.accept()

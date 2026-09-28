@@ -1,57 +1,53 @@
-# Literature Buddy configuration.
-# Hardware presets: pick profile "16gb" or "24gb" (or edit fields directly).
+# Literature Buddy Configuration
 
-profile: "16gb"
+app:
+  name: "Literature Buddy"
+  version: "0.1.0"
+  window_size:
+    width: 1200
+    height: 800
 
-llm:
-  provider: transformers            # ollama | llamacpp | transformers
-  model: Qwen/Qwen3-14B-AWQ   # or a local path to the model dir
-  # model: Qwen/Qwen3-32B   # or Qwen/Qwen3-30B-A3B if you prefer MoE if 24GB Card
-  quantization: 4bit
-  max_tokens: 2048
-  temperature: 0.1            # low temperature reduces hallucination in RAG
-  context_window: 32768
-  # llamacpp: model_path: ~/.cache/literature_buddy/qwen3-14b-q4_k_m.gguf, n_gpu_layers: -1
-  # transformers: model_path: Qwen/Qwen3-14B-AWQ
-  cache_dir: ~/.cache/literature_buddy/models
+# Local Model Configuration
+models:
+  # Path to local model directory (relative to project root or absolute)
+  local_model_path: "./models"
+  
+  # Embedding model (local)
+  embedding:
+    model_name: "all-MiniLM-L6-v2"
+    cache_dir: "./models/embeddings"
+    device: "cpu"  # Use "cuda" if available
+  
+  # LLM for chat (local)
+  llm:
+    model_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    cache_dir: "./models/llm"
+    device: "cpu"
+    max_context_length: 2048
+    max_new_tokens: 512
+    temperature: 0.7
+  
+  # Reranker model (optional, local)
+  reranker:
+    model_name: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    cache_dir: "./models/reranker"
+    device: "cpu"
+    top_k: 5
 
-vlm:
-  provider: transformers            # ollama | transformers
-  model: Qwen/Qwen3-VL-8B-Instruct
-  max_tokens: 1536
-  cache_dir: ~/.cache/literature_buddy/models
+# RAG Configuration
+rag:
+  chunk_size: 512
+  chunk_overlap: 50
+  top_k_results: 5
+  use_reranker: true
+  
+# PDF Processing
+pdf:
+  max_file_size_mb: 100
+  dpi: 150
 
-embedding:
-  model: BAAI/bge-m3
-  batch_size: 32
-  device: auto                # auto | cuda | cpu (auto picks cuda if available)
-
-reranker:
-  enabled: true
-  model: BAAI/bge-reranker-v2-m3
-  top_n: 6
-
-retrieval:
-  top_k: 12                   # candidates before reranking; reranker cuts to top_n
-  bm25_weight: 0.3            # hybrid: score = (1-w)*dense + w*bm25
-  figure_regex_boost: true    # "Figure 3" in query -> direct figure lookup
-
-document:
-  extract_figures: true
-  extract_tables: true
-  min_figure_area_px: 40000   # skip tiny inline images/icons
-  ocr_fallback: false         # pymupdf4llm+tesseract hook (optional, off by default)
-
-storage:
-  data_dir: ~/.literature_buddy
-  papers_dir: ~/.literature_buddy/papers
-  figures_dir: ~/.literature_buddy/figures
-  index_dir: ~/.literature_buddy/indexes
-
-memory:
-  max_history_turns: 6        # short-term conversation memory window
-  summary_threshold: 4        # summarize dropped turns when exceeded
-
+# UI
 ui:
-  window_title: "Literature Buddy"
-  pdf_default_zoom: 1.2
+  theme: "light"
+  highlight_color: "#FFFF00"
+  font_size: 14

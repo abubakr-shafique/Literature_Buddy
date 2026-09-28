@@ -1,38 +1,42 @@
-"""Citation cards for the GUI; links use lb://page/<n> anchors handled by MainWindow."""
+"""Citation tracking for RAG responses."""
 
-from __future__ import annotations
-
+from typing import List, Dict
 from dataclasses import dataclass
-
-from literature_buddy.retrieval.retriever import RetrievedChunk
 
 
 @dataclass
 class Citation:
-    label: str   # e.g. "Figure 2, p.4"
-    page: int
-    snippet: str
-
-    def as_html(self) -> str:
-        return (f'<a href="lb://page/{self.page}">▸ {self.label}</a>'
-                f'<br><small>{self.snippet[:160].strip()}…</small>')
+    """Represents a citation."""
+    chunk_id: int
+    source: str
+    text: str
 
 
-def citations_from_hits(hits: list[RetrievedChunk], max_n: int = 4) -> list[Citation]:
-    out, seen = [], set()
-    for h in hits:
-        c = h.chunk
-        if c.figure_label:
-            label = f"{c.figure_label}, p.{c.page}"
-        elif c.table_label:
-            label = f"{c.table_label}, p.{c.page}"
-        else:
-            sec = c.section_title or c.section or "Text"
-            label = f"{sec}, p.{c.page}"
-        if label in seen:
-            continue
-        seen.add(label)
-        out.append(Citation(label=label, page=c.page, snippet=c.text))
-        if len(out) >= max_n:
-            break
-    return out
+class CitationTracker:
+    """Tracks citations in RAG responses."""
+    
+    def __init__(self):
+        self.citations: Dict[int, Citation] = {}
+    
+    def add_citation(self, chunk_id: int, source: str, text: str) -> None:
+        """Add a citation."""
+        self.citations[chunk_id] = Citation(
+            chunk_id=chunk_id,
+            source=source,
+            text=text
+        )
+    
+    def get_citation(self, chunk_id: int) -> Citation:
+        """Get a citation by ID."""
+        return self.citations.get(chunk_id)
+    
+    def format_citations(self) -> str:
+        """Format all citations for display."""
+        if not self.citations:
+            return ""
+        
+        lines = ["\n\n**Sources:**"]
+        for chunk_id, citation in sorted(self.citations.items()):
+            lines.append(f"[{chunk_id + 1}] {citation.source}")
+        
+        return "\n".join(lines)

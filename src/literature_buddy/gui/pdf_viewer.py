@@ -1,216 +1,213 @@
-"""PDF viewer: page navigation, zoom, search, goto-page for citation links,
-drag-and-drop, click-to-open, and annotation support."""
+"""PDF viewer widget with drag-and-drop support and crash protection."""
 
-from __future__ import annotations
-
+import os
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
-import fitz
-from PySide6.QtCore import Qt, Signal, QRectF, QPointF
-from PySide6.QtGui import (QDragEnterEvent, QDropEvent, QImage, QPixmap,
-                           QPainter, QColor, QPen, QBrush, QMouseEvent)
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLineEdit, QPushButton,
-                               QScrollArea, QVBoxLayout, QWidget)
+from PySide6.QtCore import Qt, QUrl, Signal, QObject
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QDesktopServices
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QSizePolicy
 
-
-class Annotation:
-    """Simple rectangle highlight/underline annotation."""
-
-    def __init__(self, page: int, rect: QRectF, kind: str = "highlight"):
-        self.page = page          # 1-based
-        self.rect = rect          # in page coordinates (fitz)
-        self.kind = kind          # "highlight" | "underline"
-        self.text = ""            # extracted text for context
+from PyMuPDF import fitz
 
 
-class PdfViewer(QWidget):
-    pageChanged = Signal(int)
-    pdfOpened = Signal(str)       # emitted with file path
-    annotationAdded = Signal(object)  # Annotation
-
-    def __init__(self, settings=None, parent=None):
+class PdfViewerWidget(QWidget):
+    """Widget for displaying PDF documents with drag-and-drop support."""
+    
+    pdf_loaded = Signal(str)  # Emits file path when PDF is loaded
+    error_occurred = Signal(str)  # Emits error message
+    
+    def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self._doc: Optional[fitz.Document] = None
-        self._page = 0
-        zoom = getattr(settings.ui, "pdf_default_zoom", 1.2) if settings else 1.2
-        self._zoom = zoom
-        self._annotations: list[Annotation] = []
-
-        self.image = QLabel()
-        self.image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image.setMouseTracking(True)
-        self.image.mousePressEvent = self._on_mouse
-        self.image.dragEnterEvent = self._drag_enter
-        self.image.dropEvent = self._drop
-
-        scroll = QScrollArea()
-        scroll.setWidget(self.image)
-        scroll.setWidgetResizable(True)
-
-        self.prev_btn = QPushButton("◀")
-        self.next_btn = QPushButton("▶")
-        self.zoom_out = QPushButton("−")
-        self.zoom_in = QPushButton("+")
-        self.highlight_btn = QPushButton("Highlight")
-        self.underline_btn = QPushButton("Underline")
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Search text…")
-        self.page_label = QLabel("No document")
-
-        self.prev_btn.clicked.connect(self.prev_page)
-        self.next_btn.clicked.connect(self.next_page)
-        self.zoom_in.clicked.connect(lambda: self.set_zoom(self._zoom * 1.25))
-        self.zoom_out.clicked.connect(lambda: self.set_zoom(self._zoom / 1.25))
-        self.search.returnPressed.connect(self._do_search)
-        self.highlight_btn.clicked.connect(lambda: self._start_selection("highlight"))
-        self.underline_btn.clicked.connect(lambda: self._start_selection("underline"))
-
-        self._selection_start: Optional[QPointF] = None
-        self._selection_kind: Optional[str] = None
-
-        bar = QHBoxLayout()
-        for w in (self.prev_btn, self.page_label, self.next_btn,
-                  self.zoom_out, self.zoom_in,
-                  self.highlight_btn, self.underline_btn, self.search):
-            bar.addWidget(w)
-        lay = QVBoxLayout(self)
-        lay.addWidget(scroll)
-        lay.addLayout(bar)
-
-    # -- API ---------------------------------------------------------------
-    def open_pdf(self, path: str | Path) -> None:
-        self._doc = fitz.open(str(path))
-        self._page = 0
-        self._annotations.clear()
-        self._render()
-        self.pdfOpened.emit(str(path))
-
-    def goto_page(self, page_1_based: int) -> None:
-        if self._doc is None:
-            return
-        self._page = max(0, min(int(page_1_based) - 1, len(self._doc) - 1))
-        self._render()
-
-    def prev_page(self):
-        if self._doc:
-            self.goto_page(max(1, self._page))
-
-    def next_page(self):
-        if self._doc:
-            self.goto_page(min(len(self._doc), self._page + 2))
-
-    def set_zoom(self, z: float):
-        self._zoom = max(0.4, min(4.0, z))
-        self._render()
-
-    def _do_search(self):
-        if self._doc is None or not self.search.text().strip():
-            return
-        q = self.search.text().lower()
-        for i in range(self._page + 1, len(self._doc)):
-            if q in self._doc[i].get_text().lower():
-                self.goto_page(i + 1)
-                return
-
-    def _render(self) -> None:
-        if self._doc is None:
-            self.image.setPixmap(QPixmap())
-            self.page_label.setText("No document")
-            return
-        page = self._doc[self._page]
-        pix = page.get_pixmap(matrix=fitz.Matrix(self._zoom, self._zoom))
-        img = QImage(pix.samples, pix.width, pix.height, pix.stride,
-                     QImage.Format.Format_RGB888).copy()
-        painter = QPainter(img)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        for ann in self._annotations:
-            if ann.page != self._page + 1:
-                continue
-            rect = ann.rect
-            # scale from page coords to pixmap coords
-            r = QRectF(
-                rect.x0 * self._zoom, rect.y0 * self._zoom,
-                (rect.x1 - rect.x0) * self._zoom,
-                (rect.y1 - rect.y0) * self._zoom,
-            )
-            if ann.kind == "highlight":
-                painter.fillRect(r, QColor(255, 255, 0, 80))
-            else:
-                pen = QPen(QColor(255, 0, 0), 2)
-                painter.setPen(pen)
-                painter.drawLine(r.topLeft(), r.topRight())
-        painter.end()
-        self.image.setPixmap(QPixmap.fromImage(img))
-        self.page_label.setText(f"Page {self._page + 1} of {len(self._doc)}")
-        self.pageChanged.emit(self._page + 1)
-
-    # -- drag & drop --------------------------------------------------------
-    def _drag_enter(self, event: QDragEnterEvent):
+        self.current_pdf: Optional[fitz.Document] = None
+        self.current_path: Optional[str] = None
+        
+        self._setup_ui()
+        self._setup_drag_drop()
+    
+    def _setup_ui(self) -> None:
+        """Initialize the user interface."""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.placeholder_label = QLabel("Drop a PDF here or click to open")
+        self.placeholder_label.setAlignment(Qt.AlignCenter)
+        self.placeholder_label.setStyleSheet("""
+            QLabel {
+                background-color: #f0f0f0;
+                border: 2px dashed #ccc;
+                border-radius: 10px;
+                color: #666;
+                font-size: 16px;
+                padding: 40px;
+            }
+        """)
+        self.placeholder_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout.addWidget(self.placeholder_label)
+        
+        # Make widget clickable
+        self.placeholder_label.mousePressEvent = self._on_click_open
+        
+    def _setup_drag_drop(self) -> None:
+        """Enable drag and drop functionality."""
+        self.setAcceptDrops(True)
+        
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        """Handle drag enter events - accept only PDF files."""
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
-            if urls and urls[0].toLocalFile().lower().endswith(".pdf"):
-                event.acceptProposedAction()
-
-    def _drop(self, event: QDropEvent):
-        urls = event.mimeData().urls()
-        if urls:
-            path = urls[0].toLocalFile()
-            if path.lower().endswith(".pdf"):
-                self.open_pdf(path)
-                self.pdfOpened.emit(path)
-
-    # -- click to open + annotation selection -------------------------------
-    def _on_mouse(self, event: QMouseEvent):
-        if self._doc is None:
-            # click on empty viewer -> open dialog
-            if event.button() == Qt.MouseButton.LeftButton:
-                from PySide6.QtWidgets import QFileDialog
-                path, _ = QFileDialog.getOpenFileName(
-                    self, "Open paper", "", "PDF files (*.pdf)")
-                if path:
-                    self.open_pdf(path)
-                    self.pdfOpened.emit(path)
-            return
-
-        if self._selection_kind:
-            # finish selection
-            pos = event.pos()
-            if self._selection_start:
-                x0 = min(self._selection_start.x(), pos.x()) / self._zoom
-                y0 = min(self._selection_start.y(), pos.y()) / self._zoom
-                x1 = max(self._selection_start.x(), pos.x()) / self._zoom
-                y1 = max(self._selection_start.y(), pos.y()) / self._zoom
-                rect = QRectF(x0, y0, x1 - x0, y1 - y0)
-                if rect.width() > 5 and rect.height() > 5:
-                    page = self._doc[self._page]
-                    # convert to page coords for text extraction
-                    fz_rect = fitz.Rect(x0, y0, x1, y1)
-                    text = page.get_text("text", clip=fz_rect).strip()
-                    ann = Annotation(page=self._page + 1,
-                                     rect=fitz.Rect(x0, y0, x1, y1),
-                                     kind=self._selection_kind)
-                    ann.text = text
-                    self._annotations.append(ann)
-                    self._render()
-                    self.annotationAdded.emit(ann)
-            self._selection_start = None
-            self._selection_kind = None
-        else:
-            # single click on blank area could also open file (optional)
-            pass
-
-    def _start_selection(self, kind: str):
-        if self._doc is None:
-            return
-        self._selection_kind = kind
-        # next mouse press will set start point
-        self.image.mousePressEvent = lambda ev: self._selection_press(ev, kind)
-
-    def _selection_press(self, event: QMouseEvent, kind: str):
-        self._selection_start = QPointF(event.pos())
-        # restore normal handler after release
-        def release(ev):
-            self._on_mouse(ev)
-            self.image.mousePressEvent = self._on_mouse
-        self.image.mouseReleaseEvent = release
+            if urls:
+                url = urls[0]
+                if url.isLocalFile():
+                    file_path = url.toLocalFile()
+                    if file_path.lower().endswith('.pdf'):
+                        event.acceptProposedAction()
+                        self.placeholder_label.setStyleSheet("""
+                            QLabel {
+                                background-color: #e0f0ff;
+                                border: 2px solid #0078d7;
+                                border-radius: 10px;
+                                color: #0078d7;
+                                font-size: 16px;
+                                padding: 40px;
+                            }
+                        """)
+                        return
+        event.ignore()
+    
+    def dragLeaveEvent(self, event) -> None:
+        """Reset style when drag leaves."""
+        self.placeholder_label.setStyleSheet("""
+            QLabel {
+                background-color: #f0f0f0;
+                border: 2px dashed #ccc;
+                border-radius: 10px;
+                color: #666;
+                font-size: 16px;
+                padding: 40px;
+            }
+        """)
+        super().dragLeaveEvent(event)
+    
+    def dropEvent(self, event: QDropEvent) -> None:
+        """Handle drop events - load the PDF file."""
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls:
+                url = urls[0]
+                if url.isLocalFile():
+                    file_path = url.toLocalFile()
+                    if file_path.lower().endswith('.pdf'):
+                        event.acceptProposedAction()
+                        self._load_pdf_safe(file_path)
+                        return
+        event.ignore()
+    
+    def _on_click_open(self, event) -> None:
+        """Handle click to open PDF."""
+        from PySide6.QtWidgets import QFileDialog
+        
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open PDF",
+            "",
+            "PDF Files (*.pdf);;All Files (*)"
+        )
+        
+        if file_path:
+            self._load_pdf_safe(file_path)
+    
+    def _load_pdf_safe(self, file_path: str) -> None:
+        """Load PDF with error handling to prevent crashes."""
+        try:
+            # Close existing document
+            if self.current_pdf:
+                self.current_pdf.close()
+                self.current_pdf = None
+            
+            # Validate file exists and is readable
+            if not os.path.exists(file_path):
+                self.error_occurred.emit(f"File not found: {file_path}")
+                return
+            
+            if not os.access(file_path, os.R_OK):
+                self.error_occurred.emit(f"Cannot read file: {file_path}")
+                return
+            
+            # Check file size (warn if > 100MB)
+            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            if file_size_mb > 100:
+                self.error_occurred.emit(
+                    f"Large PDF detected ({file_size_mb:.1f} MB). Loading may be slow."
+                )
+            
+            # Open PDF with PyMuPDF
+            self.current_pdf = fitz.open(file_path)
+            self.current_path = file_path
+            
+            # Verify PDF is valid
+            if self.current_pdf.page_count == 0:
+                self.error_occurred.emit("PDF has no pages")
+                self.current_pdf.close()
+                self.current_pdf = None
+                return
+            
+            # Emit success signal
+            self.pdf_loaded.emit(file_path)
+            
+            # Update UI
+            self.placeholder_label.setText(f"Loaded: {Path(file_path).name}\n{self.current_pdf.page_count} pages")
+            self.placeholder_label.setStyleSheet("""
+                QLabel {
+                    background-color: #e8f5e9;
+                    border: 2px solid #4caf50;
+                    border-radius: 10px;
+                    color: #2e7d32;
+                    font-size: 16px;
+                    padding: 40px;
+                }
+            """)
+            
+        except fitz.FileDataError as e:
+            self.error_occurred.emit(f"Invalid or corrupted PDF: {str(e)}")
+            self._reset_ui()
+        except fitz.FitzError as e:
+            self.error_occurred.emit(f"PDF error: {str(e)}")
+            self._reset_ui()
+        except PermissionError as e:
+            self.error_occurred.emit(f"Permission denied: {str(e)}")
+            self._reset_ui()
+        except Exception as e:
+            self.error_occurred.emit(f"Unexpected error: {str(e)}")
+            self._reset_ui()
+    
+    def _reset_ui(self) -> None:
+        """Reset UI to initial state."""
+        self.current_pdf = None
+        self.current_path = None
+        self.placeholder_label.setText("Drop a PDF here or click to open")
+        self.placeholder_label.setStyleSheet("""
+            QLabel {
+                background-color: #f0f0f0;
+                border: 2px dashed #ccc;
+                border-radius: 10px;
+                color: #666;
+                font-size: 16px;
+                padding: 40px;
+            }
+        """)
+    
+    def get_pdf_document(self) -> Optional[fitz.Document]:
+        """Return the current PDF document."""
+        return self.current_pdf
+    
+    def get_pdf_path(self) -> Optional[str]:
+        """Return the current PDF file path."""
+        return self.current_path
+    
+    def closeEvent(self, event) -> None:
+        """Clean up resources on close."""
+        if self.current_pdf:
+            self.current_pdf.close()
+            self.current_pdf = None
+        super().closeEvent(event)

@@ -1,69 +1,48 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "literature-buddy"
 version = "0.1.0"
-description = "Interactive scientific literature reading assistant with local LLM/VLM support"
+description = "PDF reader with AI-powered chat and RAG"
 readme = "README.md"
-license = { text = "MIT" }
-requires-python = ">=3.11"
-authors = [{ name = "Literature Buddy Contributors" }]
-keywords = ["scientific-literature", "rag", "llm", "vlm", "pdf", "research"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Abubakr Shafique", email = "abubakr.shafique@gmail.com"}
 ]
-
 dependencies = [
-    "PySide6>=6.7",
-    "pymupdf>=1.24",
-    "sentence-transformers>=3.0",
-    "chromadb>=0.5",
-    "rank-bm25>=0.2.2",
-    "requests>=2.31",
-    "pydantic>=2.6",
-    "pydantic-settings>=2.2",
-    "PyYAML>=6.0",
-    "ollama>=0.3",
-    "numpy>=1.26",
+    "PySide6>=6.6.0",
+    "PyMuPDF>=1.23.0",
+    "torch>=2.1.0",
+    "transformers>=4.36.0",
+    "sentence-transformers>=2.2.2",
+    "faiss-cpu>=1.7.4",
+    "langchain>=0.1.0",
+    "pyyaml>=6.0",
+    "numpy>=1.24.0",
+    "tqdm>=4.66.0",
 ]
 
 [project.optional-dependencies]
-all = [
-    "transformers>=4.46",
-    "torch>=2.4",
-    "bitsandbytes>=0.44; platform_system != 'Windows'",
-    "llama-cpp-python>=0.2.90",
-    "FlagEmbedding>=1.3",
-]
 dev = [
-    "pytest>=8.0",
-    "pytest-qt>=4.4",
-    "pytest-mock>=3.14",
-    "ruff>=0.6",
+    "pytest>=7.4.0",
+    "black>=23.0",
+    "mypy>=1.7.0",
 ]
 
 [project.scripts]
 literature-buddy = "literature_buddy.main:main"
 
-[project.urls]
-Homepage = "https://github.com/your-org/literature-buddy"
-
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.ruff]
+[tool.black]
 line-length = 100
-target-version = "py311"
+target-version = ['py39', 'py310', 'py311']
 
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
