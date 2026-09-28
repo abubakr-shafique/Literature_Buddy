@@ -91,6 +91,15 @@ Literature_Buddy/
 └── README.md
 ```
 
+## Install in editable mode (once)
+pip install -e .
+
+## Run the main entry point
+python -m literature_buddy.main
+
+## Or, if you add a scripts entry in pyproject.toml:
+literature-buddy
+
 
 ## Requirements
 

@@ -46,3 +46,7 @@ target-version = ['py39', 'py310', 'py311']
 python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["literature_buddy*"]
