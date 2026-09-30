@@ -1,0 +1,10 @@
+# Extra stack for in-process inference with local weights (profiles 16gb / 24gb)
+# Install PyTorch first from https://pytorch.org/get-started/locally/ for your CUDA version, then:
+-r requirements.txt
+torch>=2.4
+transformers>=4.56
+accelerate>=1.0
+bitsandbytes>=0.45; platform_system != "Darwin"
+sentence-transformers>=3.0
+huggingface_hub>=0.25
+pillow>=10

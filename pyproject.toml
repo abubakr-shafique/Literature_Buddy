@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "literature-buddy"
+version = "0.1.0"
+description = "Local, evidence-grounded reading assistant for scientific papers (PDF viewer + RAG + VLM)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+keywords = ["scientific literature", "RAG", "PDF", "LLM", "VLM", "local AI", "PySide6"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering",
+  "Environment :: X11 Applications :: Qt",
+]
+dependencies = [
+  "PySide6>=6.7",
+  "PyMuPDF>=1.25",
+  "numpy>=1.26",
+  "httpx>=0.27",
+  "pydantic>=2.6",
+  "PyYAML>=6.0",
+  "platformdirs>=4.0",
+  "python-dotenv>=1.0",
+  "markdown>=3.5",
+]
+
+[project.optional-dependencies]
+# In-process inference with local weights (torch stack). Not needed for the Ollama path.
+transformers = [
+  "torch>=2.4",
+  "transformers>=4.56",
+  "accelerate>=1.0",
+  "bitsandbytes>=0.45; platform_system != 'Darwin'",
+  "sentence-transformers>=3.0",
+  "huggingface_hub>=0.25",
+  "pillow>=10",
+]
+llamacpp = ["llama-cpp-python>=0.3"]
+dev = ["pytest>=8", "pytest-qt>=4.4", "ruff>=0.5"]
+
+[project.scripts]
+literature-buddy = "literature_buddy.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+literature_buddy = ["resources/*", "config/profiles/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = ["gui: tests that need a Qt platform plugin (run with QT_QPA_PLATFORM=offscreen)"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501", "B008"]

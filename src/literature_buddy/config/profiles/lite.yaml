@@ -1,0 +1,14 @@
+# Smallest footprint: 8-12 GB GPU or CPU-only. Ollama + lexical embeddings (no extra downloads).
+llm:
+  provider: ollama
+  model: gemma4:12b
+  context_length: 8192
+  max_new_tokens: 800
+vlm:
+  same_as_llm: true
+embedding:
+  provider: hashing
+retrieval:
+  top_k: 6
+  rerank: false
+  max_context_tokens: 3500
