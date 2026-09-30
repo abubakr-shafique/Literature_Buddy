@@ -58,7 +58,7 @@ Requires **Python 3.11+**. Pick one path.
 ### Path A – Ollama (easiest, no PyTorch)
 
 ```bash
-git clone https://github.com/your-org/literature-buddy && cd literature-buddy
+git clone https://github.com/abubakr-shafique/Literature_Buddy && cd literature_buddy
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt && pip install -e . --no-deps
 
@@ -72,7 +72,7 @@ literature-buddy --profile 16gb-ollama examples/sample_paper.pdf
 ### Path B – Transformers with local weights (fully offline afterwards)
 
 ```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu124   # pick your CUDA build: pytorch.org
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130   # pick your CUDA build: pytorch.org
 pip install -r requirements-transformers.txt && pip install -e . --no-deps
 python scripts/download_models.py --profile 16gb          # or 24gb  → ./models
 LB_OFFLINE=true literature-buddy --profile 16gb paper.pdf
